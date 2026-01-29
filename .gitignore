@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+*.log
+
+# gRPC generated files
+*_pb2.py
+*_pb2_grpc.py
+
+# Flatbuffers generated files
+*_generated.py
+
+# OS junk
+.DS_Store
