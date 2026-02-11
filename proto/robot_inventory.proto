@@ -1,16 +1,16 @@
 syntax = "proto3";
-
 package grocery;
 
 import "common.proto";
 
-// Example robot request: report that an item was consumed or scanned
-message RobotUpdateRequest {
+message RobotTaskResult {
   string robot_id = 1;
-  repeated ItemQty consumed = 2; // e.g., milk qty 1
-  int64 timestamp_ms = 3;
+  string task_id = 2;
+  ReplyCode code = 3;
+  string message = 4;
+  int64 timestamp_ms = 5;
 }
 
-service RobotInventoryService {
-  rpc ReportRobotUpdate(RobotUpdateRequest) returns (BasicReply);
+service InventoryRobotService {
+  rpc ReportTaskResult(RobotTaskResult) returns (BasicReply);
 }

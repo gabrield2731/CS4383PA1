@@ -1,0 +1,10 @@
+namespace grocery.fb;
+
+table AnalyticsEvent {
+  event_id:string;
+  source:string;        // e.g. inventory_service
+  event_type:string;    // e.g. "TASK_PUBLISHED"
+  timestamp_ms:long;
+}
+
+root_type AnalyticsEvent;
