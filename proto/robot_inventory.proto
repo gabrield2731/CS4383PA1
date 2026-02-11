@@ -1,0 +1,16 @@
+syntax = "proto3";
+package grocery;
+
+import "common.proto";
+
+message RobotTaskResult {
+  string robot_id = 1;
+  string task_id = 2;
+  ReplyCode code = 3;
+  string message = 4;
+  int64 timestamp_ms = 5;
+}
+
+service InventoryRobotService {
+  rpc ReportTaskResult(RobotTaskResult) returns (BasicReply);
+}
