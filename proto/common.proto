@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package grocery;
+
+// Required types from spec: message types + reply codes
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  GROCERY_ORDER = 1;
+  RESTOCK_ORDER = 2;
+}
+
+enum ReplyCode {
+  REPLY_CODE_UNSPECIFIED = 0;
+  OK = 1;
+  BAD_REQUEST = 2;
+  INTERNAL_ERROR = 3;
+}
+
+// Single line item
+message ItemQty {
+  string item = 1;
+  double qty = 2;
+}
+
+// Aisle container
+message AisleItems {
+  repeated ItemQty items = 1;
+}
+
+// 5 aisles (per spec)
+message Order {
+  AisleItems bread = 1;
+  AisleItems meat = 2;
+  AisleItems produce = 3;
+  AisleItems dairy = 4;
+  AisleItems party = 5;
+}
+
+// Ordering → Inventory request
+message OrderRequest {
+  MessageType message_type = 1;
+
+  // For grocery orders
+  string customer_id = 2;
+
+  // For restock orders
+  string supplier_id = 3;
+
+  Order order = 4;
+  int64 timestamp_ms = 5;
+}
+
+// Generic reply
+message BasicReply {
+  ReplyCode code = 1;
+  string message = 2;
+}
