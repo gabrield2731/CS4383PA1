@@ -1,11 +1,6 @@
+include "common.fbs";
+
 namespace grocery.fb;
-
-enum TaskType:byte { UNKNOWN = 0, FETCH = 1 }
-
-table ItemQty {
-  item:string;
-  qty:double;
-}
 
 table FetchTask {
   task_id:string;

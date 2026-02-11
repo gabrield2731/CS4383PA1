@@ -1,3 +1,12 @@
+"""
+Standalone ZMQ publisher: sends FETCH/RESTOCK tasks on a timer (every 5s).
+
+You do NOT need to run this for normal operation. When you submit orders from the
+Streamlit UI, the inventory server (server.py) already publishes to ZMQ on port 5556.
+Run this script only if you want to test the robot with a continuous stream of
+tasks without using the UI (use a different port, e.g. --port 5557, so it doesn't
+conflict with the inventory server).
+"""
 import sys
 import time
 from pathlib import Path
@@ -66,7 +75,7 @@ def build_restock_task(task_id: str, items: list[tuple[str, float]]) -> bytes:
     return bytes(b.Output())
 
 
-def main(bind_addr="tcp://*:5556"):
+def main(bind_addr="tcp://*:5557"):
     ctx = zmq.Context()
     pub = ctx.socket(zmq.PUB)
     pub.bind(bind_addr)

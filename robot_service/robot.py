@@ -7,6 +7,7 @@ from proto import robot_inventory_pb2 as robot_pb2
 from proto import robot_inventory_pb2_grpc as inv_robot_grpc
 
 from fbschemas.grocery.fb import FetchTask, RestockTask
+from fbschemas.grocery.fb import ItemQty, TaskType
 
 
 INVENTORY_GRPC_ADDR = "localhost:50051"

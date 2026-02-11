@@ -4,4 +4,5 @@
 
 class TaskType(object):
     UNKNOWN = 0
-    RESTOCK = 1
+    FETCH = 1
+    RESTOCK = 2
