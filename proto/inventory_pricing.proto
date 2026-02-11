@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package grocery;
+
+import "common.proto";
+
+message PriceRequest {
+  repeated ItemQty items = 1;
+}
+
+message PriceResponse {
+  ReplyCode code = 1;
+  string message = 2;
+  double total_price = 3;
+}
+
+// Inventory can call Pricing (future milestone)
+service PricingService {
+  rpc GetTotalPrice(PriceRequest) returns (PriceResponse);
+}
