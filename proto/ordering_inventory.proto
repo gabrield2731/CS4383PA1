@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package grocery;
+
+import "common.proto";
+
+// Ordering microservice calls Inventory microservice
+service InventoryService {
+  rpc ProcessOrder(OrderRequest) returns (BasicReply);
+}
