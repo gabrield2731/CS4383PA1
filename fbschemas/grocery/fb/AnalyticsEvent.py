@@ -52,8 +52,22 @@ class AnalyticsEvent(object):
             return self._tab.Get(flatbuffers.number_types.Int64Flags, o + self._tab.Pos)
         return 0
 
+    # AnalyticsEvent
+    def LatencyMs(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(12))
+        if o != 0:
+            return self._tab.Get(flatbuffers.number_types.Float64Flags, o + self._tab.Pos)
+        return 0.0
+
+    # AnalyticsEvent
+    def Success(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(14))
+        if o != 0:
+            return bool(self._tab.Get(flatbuffers.number_types.BoolFlags, o + self._tab.Pos))
+        return False
+
 def AnalyticsEventStart(builder):
-    builder.StartObject(4)
+    builder.StartObject(6)
 
 def Start(builder):
     AnalyticsEventStart(builder)
@@ -81,6 +95,18 @@ def AnalyticsEventAddTimestampMs(builder, timestampMs):
 
 def AddTimestampMs(builder, timestampMs):
     AnalyticsEventAddTimestampMs(builder, timestampMs)
+
+def AnalyticsEventAddLatencyMs(builder, latencyMs):
+    builder.PrependFloat64Slot(4, latencyMs, 0.0)
+
+def AddLatencyMs(builder, latencyMs):
+    AnalyticsEventAddLatencyMs(builder, latencyMs)
+
+def AnalyticsEventAddSuccess(builder, success):
+    builder.PrependBoolSlot(5, success, 0)
+
+def AddSuccess(builder, success):
+    AnalyticsEventAddSuccess(builder, success)
 
 def AnalyticsEventEnd(builder):
     return builder.EndObject()

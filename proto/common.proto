@@ -55,4 +55,5 @@ message BasicReply {
   ReplyCode code = 1;
   string message = 2;
   repeated ItemQty items = 3;  // processed items for order responses
+  double total_price = 4;      // total cost (set for grocery orders after pricing)
 }

@@ -2,9 +2,11 @@ namespace grocery.fb;
 
 table AnalyticsEvent {
   event_id:string;
-  source:string;        // e.g. inventory_service
-  event_type:string;    // e.g. "TASK_PUBLISHED"
+  source:string;        // e.g. ordering_service
+  event_type:string;    // e.g. "GROCERY_ORDER", "RESTOCK_ORDER"
   timestamp_ms:long;
+  latency_ms:double;    // end-to-end service time in milliseconds
+  success:bool;         // whether the order succeeded
 }
 
 root_type AnalyticsEvent;

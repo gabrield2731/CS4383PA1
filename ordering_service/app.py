@@ -1,17 +1,68 @@
 import time
+import uuid
 from typing import Dict, Any, List
 
 import grpc
+import zmq
+import flatbuffers
 from flask import Flask, request, jsonify
 
 from proto import common_pb2 as pb2
 from proto import ordering_inventory_pb2_grpc as inv_grpc
 
+from fbschemas.grocery.fb import AnalyticsEvent as FbAnalytics
+
 app = Flask(__name__)
 
 INVENTORY_GRPC_ADDR = "localhost:50051"
+ANALYTICS_ZMQ_BIND = "tcp://*:5557"
+
+# ----------------------------
+# ZMQ publisher for analytics (created once at module level)
+# ----------------------------
+_zmq_ctx = zmq.Context()
+_zmq_analytics_pub = _zmq_ctx.socket(zmq.PUB)
+_zmq_analytics_pub.bind(ANALYTICS_ZMQ_BIND)
+print(f"[ordering_service] analytics ZMQ PUB bound at {ANALYTICS_ZMQ_BIND}",
+      flush=True)
 
 
+# ----------------------------
+# Analytics helpers
+# ----------------------------
+def _build_analytics_event(event_type: str, latency_ms: float,
+                           success: bool) -> bytes:
+    """Build a FlatBuffers AnalyticsEvent payload."""
+    b = flatbuffers.Builder(256)
+
+    eid_off = b.CreateString(str(uuid.uuid4()))
+    src_off = b.CreateString("ordering_service")
+    etype_off = b.CreateString(event_type)
+
+    FbAnalytics.Start(b)
+    FbAnalytics.AddEventId(b, eid_off)
+    FbAnalytics.AddSource(b, src_off)
+    FbAnalytics.AddEventType(b, etype_off)
+    FbAnalytics.AddTimestampMs(b, int(time.time() * 1000))
+    FbAnalytics.AddLatencyMs(b, latency_ms)
+    FbAnalytics.AddSuccess(b, success)
+    root = FbAnalytics.End(b)
+
+    b.Finish(root)
+    return bytes(b.Output())
+
+
+def _publish_analytics(event_type: str, latency_ms: float, success: bool):
+    """Publish an analytics event via ZMQ."""
+    payload = _build_analytics_event(event_type, latency_ms, success)
+    _zmq_analytics_pub.send_multipart([b"ANALYTICS", payload])
+    print(f"[ordering_service] published analytics: type={event_type} "
+          f"latency={latency_ms:.1f}ms success={success}", flush=True)
+
+
+# ----------------------------
+# Helpers
+# ----------------------------
 def _items_from_json(arr: Any) -> List[pb2.ItemQty]:
     if not isinstance(arr, list):
         return []
@@ -66,9 +117,13 @@ def _call_inventory(req_pb: pb2.OrderRequest) -> pb2.BasicReply:
         return stub.ProcessOrder(req_pb, timeout=20)
 
 
+# ----------------------------
+# Routes
+# ----------------------------
 @app.post("/api/order")
 def grocery_order():
-    # HTTP-JSON between client and Ordering :contentReference[oaicite:8]{index=8}
+    t_start = time.perf_counter()
+
     data = request.get_json(silent=True) or {}
     customer_id = str(data.get("customer_id", "")).strip()
     order_json = data.get("order", {})
@@ -83,20 +138,36 @@ def grocery_order():
     if not customer_id:
         return jsonify({"code": "BAD_REQUEST", "message": "customer_id required"}), 400
     if _count_items(req_pb.order) == 0:
-        # Spec: cannot be empty :contentReference[oaicite:9]{index=9}
         return jsonify({"code": "BAD_REQUEST", "message": "order cannot be empty"}), 400
 
-    # Ordering -> Inventory via gRPC/Protobuf :contentReference[oaicite:10]{index=10}
-    resp = _call_inventory(req_pb)
+    # Ordering -> Inventory via gRPC/Protobuf
+    try:
+        resp = _call_inventory(req_pb)
+        success = (resp.code == pb2.ReplyCode.OK)
+    except Exception as e:
+        latency_ms = (time.perf_counter() - t_start) * 1000
+        _publish_analytics("GROCERY_ORDER", latency_ms, False)
+        return jsonify({"code": "INTERNAL_ERROR", "message": str(e)}), 500
 
-    http_code = 200 if resp.code == pb2.ReplyCode.OK else 400
+    t_end = time.perf_counter()
+    latency_ms = (t_end - t_start) * 1000
+
+    # Publish analytics event
+    _publish_analytics("GROCERY_ORDER", latency_ms, success)
+
+    http_code = 200 if success else 400
     code_name = _reply_code_name(resp.code)
     items_list = [{"item": it.item, "qty": it.qty} for it in resp.items]
-    return jsonify({"code": code_name, "message": resp.message, "items": items_list}), http_code
+    result = {"code": code_name, "message": resp.message, "items": items_list}
+    if resp.total_price > 0:
+        result["total_price"] = round(resp.total_price, 2)
+    return jsonify(result), http_code
 
 
 @app.post("/api/restock")
 def restock_order():
+    t_start = time.perf_counter()
+
     data = request.get_json(silent=True) or {}
     supplier_id = str(data.get("supplier_id", "")).strip()
     order_json = data.get("order", {})
@@ -113,12 +184,27 @@ def restock_order():
     if _count_items(req_pb.order) == 0:
         return jsonify({"code": "BAD_REQUEST", "message": "restock order cannot be empty"}), 400
 
-    resp = _call_inventory(req_pb)
+    try:
+        resp = _call_inventory(req_pb)
+        success = (resp.code == pb2.ReplyCode.OK)
+    except Exception as e:
+        latency_ms = (time.perf_counter() - t_start) * 1000
+        _publish_analytics("RESTOCK_ORDER", latency_ms, False)
+        return jsonify({"code": "INTERNAL_ERROR", "message": str(e)}), 500
 
-    http_code = 200 if resp.code == pb2.ReplyCode.OK else 400
+    t_end = time.perf_counter()
+    latency_ms = (t_end - t_start) * 1000
+
+    # Publish analytics event
+    _publish_analytics("RESTOCK_ORDER", latency_ms, success)
+
+    http_code = 200 if success else 400
     code_name = _reply_code_name(resp.code)
     items_list = [{"item": it.item, "qty": it.qty} for it in resp.items]
-    return jsonify({"code": code_name, "message": resp.message, "items": items_list}), http_code
+    result = {"code": code_name, "message": resp.message, "items": items_list}
+    if resp.total_price > 0:
+        result["total_price"] = round(resp.total_price, 2)
+    return jsonify(result), http_code
 
 
 @app.get("/health")
@@ -127,5 +213,5 @@ def health():
 
 
 if __name__ == "__main__":
-    # Flask web server required :contentReference[oaicite:11]{index=11}
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    # use_reloader=False because the ZMQ PUB socket is bound at module level
+    app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)

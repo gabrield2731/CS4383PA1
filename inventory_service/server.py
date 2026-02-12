@@ -10,6 +10,8 @@ from proto import common_pb2 as pb2
 from proto import ordering_inventory_pb2_grpc as inv_from_ordering_grpc
 from proto import robot_inventory_pb2_grpc as inv_from_robot_grpc
 from proto import robot_inventory_pb2 as robot_pb2
+from proto import inventory_pricing_pb2 as pricing_pb2
+from proto import inventory_pricing_pb2_grpc as pricing_grpc
 
 # Flatbuffers generated python (your project uses fbschemas/)
 from fbschemas.grocery.fb import FetchTask, RestockTask, TaskType
@@ -21,6 +23,7 @@ from fbschemas.grocery.fb import ItemQty as FbItemQty
 # ----------------------------
 NUM_ROBOTS = 5
 BARRIER_TIMEOUT_SECS = 10
+PRICING_GRPC_ADDR = "localhost:50052"
 
 AISLE_ITEMS = {
     "bread": ["bagels", "bread", "waffles", "tortillas", "buns"],
@@ -213,6 +216,29 @@ class InventoryState:
 
 
 # ----------------------------
+# Pricing client
+# ----------------------------
+def call_pricing_service(items: list[tuple[str, float]],
+                         addr: str = PRICING_GRPC_ADDR) -> float:
+    """Call the Pricing Service to get the total cost for a list of items.
+    Returns total_price on success, 0.0 on failure."""
+    try:
+        with grpc.insecure_channel(addr) as channel:
+            stub = pricing_grpc.PricingServiceStub(channel)
+            pb_items = [pb2.ItemQty(item=name, qty=qty)
+                        for name, qty in items]
+            resp = stub.GetTotalPrice(
+                pricing_pb2.PriceRequest(items=pb_items), timeout=5
+            )
+            print(f"[inventory_service] pricing response: ${resp.total_price:.2f} "
+                  f"({resp.message})", flush=True)
+            return resp.total_price
+    except Exception as e:
+        print(f"[inventory_service] pricing call failed: {e}", flush=True)
+        return 0.0
+
+
+# ----------------------------
 # Services
 # ----------------------------
 class InventoryService(inv_from_ordering_grpc.InventoryServiceServicer):
@@ -275,11 +301,17 @@ class InventoryService(inv_from_ordering_grpc.InventoryServiceServicer):
         pb_items = [pb2.ItemQty(item=name, qty=qty)
                     for name, qty in processed_items]
 
+        # For grocery orders (FETCH), call Pricing Service to get the bill
+        total_price = 0.0
+        if task_type == "FETCH" and processed_items:
+            total_price = call_pricing_service(processed_items)
+
         if all_responded:
             return pb2.BasicReply(
                 code=pb2.OK,
                 message=f"{task_type} completed: {len(processed_items)} items processed",
                 items=pb_items,
+                total_price=total_price,
             )
         else:
             return pb2.BasicReply(
@@ -288,6 +320,7 @@ class InventoryService(inv_from_ordering_grpc.InventoryServiceServicer):
                          f"{NUM_ROBOTS} robots responded, "
                          f"{len(processed_items)} items processed"),
                 items=pb_items,
+                total_price=total_price,
             )
 
 
