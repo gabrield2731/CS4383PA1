@@ -62,7 +62,8 @@ def _reply_code_name(code) -> str:
 def _call_inventory(req_pb: pb2.OrderRequest) -> pb2.BasicReply:
     with grpc.insecure_channel(INVENTORY_GRPC_ADDR) as channel:
         stub = inv_grpc.InventoryServiceStub(channel)
-        return stub.ProcessOrder(req_pb, timeout=5)
+        # Timeout must exceed the inventory barrier timeout (10s) + buffer
+        return stub.ProcessOrder(req_pb, timeout=20)
 
 
 @app.post("/api/order")
@@ -90,7 +91,8 @@ def grocery_order():
 
     http_code = 200 if resp.code == pb2.ReplyCode.OK else 400
     code_name = _reply_code_name(resp.code)
-    return jsonify({"code": code_name, "message": resp.message}), http_code
+    items_list = [{"item": it.item, "qty": it.qty} for it in resp.items]
+    return jsonify({"code": code_name, "message": resp.message, "items": items_list}), http_code
 
 
 @app.post("/api/restock")
@@ -115,7 +117,8 @@ def restock_order():
 
     http_code = 200 if resp.code == pb2.ReplyCode.OK else 400
     code_name = _reply_code_name(resp.code)
-    return jsonify({"code": code_name, "message": resp.message}), http_code
+    items_list = [{"item": it.item, "qty": it.qty} for it in resp.items]
+    return jsonify({"code": code_name, "message": resp.message, "items": items_list}), http_code
 
 
 @app.get("/health")

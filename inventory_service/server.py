@@ -1,6 +1,7 @@
 from concurrent import futures
 import sys
 import time
+import threading
 import grpc
 import zmq
 import flatbuffers
@@ -13,6 +14,27 @@ from proto import robot_inventory_pb2 as robot_pb2
 # Flatbuffers generated python (your project uses fbschemas/)
 from fbschemas.grocery.fb import FetchTask, RestockTask, TaskType
 from fbschemas.grocery.fb import ItemQty as FbItemQty
+
+
+# ----------------------------
+# Constants
+# ----------------------------
+NUM_ROBOTS = 5
+BARRIER_TIMEOUT_SECS = 10
+
+AISLE_ITEMS = {
+    "bread": ["bagels", "bread", "waffles", "tortillas", "buns"],
+    "dairy": ["milk", "eggs", "cheese", "yogurt", "butter"],
+    "meat": ["chicken", "beef", "pork", "turkey", "fish"],
+    "produce": ["tomatoes", "onions", "apples", "oranges", "lettuce"],
+    "party": ["soda", "paper_plates", "napkins", "chips", "cups"],
+}
+
+# Reverse lookup: item name -> aisle
+ITEM_TO_AISLE = {}
+for _aisle, _items in AISLE_ITEMS.items():
+    for _item in _items:
+        ITEM_TO_AISLE[_item] = _aisle
 
 
 # ----------------------------
@@ -85,53 +107,230 @@ def pb_order_to_items(order: pb2.Order) -> list[tuple[str, float]]:
 
 
 # ----------------------------
+# Shared State
+# ----------------------------
+class TaskState:
+    """Tracks a single in-flight task awaiting robot responses."""
+
+    def __init__(self, task_type: str, original_items: list[tuple[str, float]]):
+        self.task_type = task_type          # "FETCH" or "RESTOCK"
+        self.original_items = original_items
+        self.event = threading.Event()      # signaled when all robots respond
+        self.response_count = 0
+        self.robot_results: list[dict] = []  # collected results from each robot
+
+
+class InventoryState:
+    """Centralized in-memory data store shared by both gRPC servicers."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.task_counter = 0
+
+        # In-memory inventory: { aisle: { item: count } }
+        self.inventory = {
+            aisle: {item: 100 for item in items}
+            for aisle, items in AISLE_ITEMS.items()
+        }
+
+        # Pending tasks awaiting robot responses: { task_id: TaskState }
+        self.pending_tasks: dict[str, TaskState] = {}
+
+    def next_task_id(self) -> str:
+        with self.lock:
+            self.task_counter += 1
+            return f"task_{self.task_counter}"
+
+    def create_task(self, task_id: str, task_type: str,
+                    items: list[tuple[str, float]]) -> TaskState:
+        task_state = TaskState(task_type, items)
+        with self.lock:
+            self.pending_tasks[task_id] = task_state
+        return task_state
+
+    def record_robot_result(self, task_id: str, robot_id: str,
+                            code, message: str,
+                            items: list[tuple[str, float]]) -> bool:
+        """Record a robot's result. Returns True if this was the last robot
+        (i.e. response_count just reached NUM_ROBOTS)."""
+        with self.lock:
+            task_state = self.pending_tasks.get(task_id)
+            if task_state is None:
+                return False
+
+            task_state.robot_results.append({
+                "robot_id": robot_id,
+                "code": code,
+                "message": message,
+                "items": items,
+            })
+            task_state.response_count += 1
+
+            if task_state.response_count >= NUM_ROBOTS:
+                task_state.event.set()
+                return True
+        return False
+
+    def apply_inventory_updates(self, task_id: str) -> list[tuple[str, float]]:
+        """After all robots respond (or timeout), apply inventory changes.
+        Returns the aggregated list of successfully processed items."""
+        with self.lock:
+            task_state = self.pending_tasks.get(task_id)
+            if task_state is None:
+                return []
+
+            all_processed: list[tuple[str, float]] = []
+
+            for result in task_state.robot_results:
+                if result["code"] == pb2.OK:
+                    for item_name, qty in result["items"]:
+                        aisle = ITEM_TO_AISLE.get(item_name)
+                        if aisle is None:
+                            continue
+
+                        if task_state.task_type == "FETCH":
+                            # Decrement inventory (floor at 0)
+                            current = self.inventory[aisle].get(item_name, 0)
+                            self.inventory[aisle][item_name] = max(0, current - qty)
+                        elif task_state.task_type == "RESTOCK":
+                            # Increment inventory
+                            current = self.inventory[aisle].get(item_name, 0)
+                            self.inventory[aisle][item_name] = current + qty
+
+                        all_processed.append((item_name, qty))
+
+            # Clean up pending task
+            self.pending_tasks.pop(task_id, None)
+
+        return all_processed
+
+    def dump_inventory(self):
+        """Print current inventory state (for debugging)."""
+        with self.lock:
+            for aisle, items in self.inventory.items():
+                for item, count in items.items():
+                    print(f"  {aisle}/{item}: {count}", flush=True)
+
+
+# ----------------------------
 # Services
 # ----------------------------
 class InventoryService(inv_from_ordering_grpc.InventoryServiceServicer):
-    def __init__(self, zmq_pub):
+    def __init__(self, zmq_pub, state: InventoryState):
         self.zmq_pub = zmq_pub
-        self.task_counter = 1
+        self.state = state
 
     def ProcessOrder(self, request: pb2.OrderRequest, context):
-        # Always ack for Milestone 1+2 demo
-        # But ALSO publish a robot task for Milestone 2
         items = pb_order_to_items(request.order)
 
-        # if empty, return BAD_REQUEST
+        # Reject empty orders
         if len(items) == 0:
-            return pb2.BasicReply(code=pb2.BAD_REQUEST, message="Order cannot be empty")
+            return pb2.BasicReply(code=pb2.BAD_REQUEST,
+                                  message="Order cannot be empty")
 
-        task_id = f"task_{self.task_counter}"
-        self.task_counter += 1
-
+        # Determine task type
         if request.message_type == pb2.GROCERY_ORDER:
+            task_type = "FETCH"
+        elif request.message_type == pb2.RESTOCK_ORDER:
+            task_type = "RESTOCK"
+        else:
+            return pb2.BasicReply(code=pb2.BAD_REQUEST,
+                                  message="Unknown message_type")
+
+        # Create task state for synchronization barrier
+        task_id = self.state.next_task_id()
+        task_state = self.state.create_task(task_id, task_type, items)
+
+        # Build and broadcast FlatBuffers payload via ZMQ
+        if task_type == "FETCH":
             payload = build_fetch_payload(task_id, items)
             self.zmq_pub.send_multipart([b"FETCH", payload])
-            print(f"[inventory_service] published FETCH {task_id} items={items}", flush=True)
-
-        elif request.message_type == pb2.RESTOCK_ORDER:
+        else:
             payload = build_restock_payload(task_id, items)
             self.zmq_pub.send_multipart([b"RESTOCK", payload])
-            print(f"[inventory_service] published RESTOCK {task_id} items={items}", flush=True)
 
+        print(f"[inventory_service] published {task_type} {task_id} "
+              f"items={items}", flush=True)
+
+        # Block until all 5 robots respond or timeout
+        all_responded = task_state.event.wait(timeout=BARRIER_TIMEOUT_SECS)
+
+        if all_responded:
+            print(f"[inventory_service] all {NUM_ROBOTS} robots responded "
+                  f"for {task_id}", flush=True)
         else:
-            return pb2.BasicReply(code=pb2.BAD_REQUEST, message="Unknown message_type")
+            print(f"[inventory_service] TIMEOUT waiting for robots on "
+                  f"{task_id} (got {task_state.response_count}/{NUM_ROBOTS})",
+                  flush=True)
 
-        return pb2.BasicReply(code=pb2.OK, message="Inventory received order: OK")
+        # Apply inventory updates from confirmed robot results
+        processed_items = self.state.apply_inventory_updates(task_id)
+
+        print(f"[inventory_service] {task_type} {task_id} processed "
+              f"items={processed_items}", flush=True)
+        print("[inventory_service] current inventory:", flush=True)
+        self.state.dump_inventory()
+
+        # Build response with processed items
+        pb_items = [pb2.ItemQty(item=name, qty=qty)
+                    for name, qty in processed_items]
+
+        if all_responded:
+            return pb2.BasicReply(
+                code=pb2.OK,
+                message=f"{task_type} completed: {len(processed_items)} items processed",
+                items=pb_items,
+            )
+        else:
+            return pb2.BasicReply(
+                code=pb2.OK,
+                message=(f"{task_type} partial: {task_state.response_count}/"
+                         f"{NUM_ROBOTS} robots responded, "
+                         f"{len(processed_items)} items processed"),
+                items=pb_items,
+            )
 
 
 class InventoryRobotService(inv_from_robot_grpc.InventoryRobotServiceServicer):
+    def __init__(self, state: InventoryState):
+        self.state = state
+
     def ReportTaskResult(self, request: robot_pb2.RobotTaskResult, context):
+        # Extract processed items from the robot's report
+        robot_items = [(it.item, it.qty) for it in request.items]
+
         print(
             f"[inventory_service] robot_result robot={request.robot_id} "
-            f"task={request.task_id} code={request.code} msg={request.message}",
+            f"task={request.task_id} code={request.code} "
+            f"msg={request.message} items={robot_items}",
             flush=True,
         )
-        return pb2.BasicReply(code=pb2.OK, message="Inventory received robot result: OK")
+
+        # Record the result and potentially unblock the waiting ProcessOrder
+        was_last = self.state.record_robot_result(
+            task_id=request.task_id,
+            robot_id=request.robot_id,
+            code=request.code,
+            message=request.message,
+            items=robot_items,
+        )
+
+        if was_last:
+            print(f"[inventory_service] all {NUM_ROBOTS} robots reported "
+                  f"for {request.task_id} — unblocking", flush=True)
+
+        return pb2.BasicReply(code=pb2.OK,
+                              message="Inventory received robot result: OK")
 
 
 def serve(grpc_host="0.0.0.0", grpc_port=50051, zmq_bind="tcp://*:5556"):
-    # ZMQ publisher lives in the Inventory service (correct direction for Milestone 2)
+    # Shared state
+    state = InventoryState()
+
+    print("[inventory_service] initial inventory:", flush=True)
+    state.dump_inventory()
+
+    # ZMQ publisher
     zmq_ctx = zmq.Context()
     zmq_pub = zmq_ctx.socket(zmq.PUB)
     zmq_pub.bind(zmq_bind)
@@ -140,15 +339,16 @@ def serve(grpc_host="0.0.0.0", grpc_port=50051, zmq_bind="tcp://*:5556"):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
 
     inv_from_ordering_grpc.add_InventoryServiceServicer_to_server(
-        InventoryService(zmq_pub), server
+        InventoryService(zmq_pub, state), server
     )
     inv_from_robot_grpc.add_InventoryRobotServiceServicer_to_server(
-        InventoryRobotService(), server
+        InventoryRobotService(state), server
     )
 
     server.add_insecure_port(f"{grpc_host}:{grpc_port}")
     server.start()
-    print(f"[inventory_service] gRPC listening on {grpc_host}:{grpc_port}", flush=True)
+    print(f"[inventory_service] gRPC listening on {grpc_host}:{grpc_port}",
+          flush=True)
     server.wait_for_termination()
 
 

@@ -9,6 +9,7 @@ message RobotTaskResult {
   ReplyCode code = 3;
   string message = 4;
   int64 timestamp_ms = 5;
+  repeated ItemQty items = 6;  // items this robot processed
 }
 
 service InventoryRobotService {

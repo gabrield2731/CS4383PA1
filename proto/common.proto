@@ -54,4 +54,5 @@ message OrderRequest {
 message BasicReply {
   ReplyCode code = 1;
   string message = 2;
+  repeated ItemQty items = 3;  // processed items for order responses
 }
