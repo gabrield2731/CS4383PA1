@@ -12,7 +12,7 @@ import streamlit as st
 DEFAULT_ORDERING_BASE_URL = "http://localhost:5001"  # change if your Ordering service runs elsewhere
 DEFAULT_ORDER_ENDPOINT = "/api/order"
 DEFAULT_RESTOCK_ENDPOINT = "/api/restock"
-DEFAULT_TIMEOUT_SECS = 10
+DEFAULT_TIMEOUT_SECS = 25  # ordering→inventory→robots+pricing can exceed 10s
 
 
 # -----------------------------

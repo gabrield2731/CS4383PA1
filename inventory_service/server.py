@@ -144,6 +144,21 @@ class InventoryState:
             self.task_counter += 1
             return f"task_{self.task_counter}"
 
+    def cap_items_to_stock(self, items: list[tuple[str, float]]) -> list[tuple[str, float]]:
+        """For grocery (FETCH) orders: cap each item's qty to available stock.
+        Returns list of (item, capped_qty); drops items with 0 available."""
+        result: list[tuple[str, float]] = []
+        with self.lock:
+            for item_name, qty in items:
+                aisle = ITEM_TO_AISLE.get(item_name)
+                if aisle is None:
+                    continue
+                available = self.inventory[aisle].get(item_name, 0)
+                capped = min(float(qty), float(available))
+                if capped > 0:
+                    result.append((item_name, capped))
+        return result
+
     def create_task(self, task_id: str, task_type: str,
                     items: list[tuple[str, float]]) -> TaskState:
         task_state = TaskState(task_type, items)
@@ -192,15 +207,16 @@ class InventoryState:
                             continue
 
                         if task_state.task_type == "FETCH":
-                            # Decrement inventory (floor at 0)
+                            # Decrement inventory: never deduct more than we have
                             current = self.inventory[aisle].get(item_name, 0)
-                            self.inventory[aisle][item_name] = max(0, current - qty)
+                            deduct = min(qty, current)
+                            self.inventory[aisle][item_name] = current - deduct
+                            all_processed.append((item_name, deduct))
                         elif task_state.task_type == "RESTOCK":
                             # Increment inventory
                             current = self.inventory[aisle].get(item_name, 0)
                             self.inventory[aisle][item_name] = current + qty
-
-                        all_processed.append((item_name, qty))
+                            all_processed.append((item_name, qty))
 
             # Clean up pending task
             self.pending_tasks.pop(task_id, None)
@@ -247,10 +263,10 @@ class InventoryService(inv_from_ordering_grpc.InventoryServiceServicer):
         self.state = state
 
     def ProcessOrder(self, request: pb2.OrderRequest, context):
-        items = pb_order_to_items(request.order)
+        original_items = pb_order_to_items(request.order)
 
         # Reject empty orders
-        if len(items) == 0:
+        if len(original_items) == 0:
             return pb2.BasicReply(code=pb2.BAD_REQUEST,
                                   message="Order cannot be empty")
 
@@ -262,6 +278,20 @@ class InventoryService(inv_from_ordering_grpc.InventoryServiceServicer):
         else:
             return pb2.BasicReply(code=pb2.BAD_REQUEST,
                                   message="Unknown message_type")
+
+        # For grocery (FETCH): cap quantities to available stock
+        items = original_items
+        if task_type == "FETCH":
+            items = self.state.cap_items_to_stock(original_items)
+            if len(items) == 0:
+                # Return all requested items with qty 0 so client sees what was requested
+                pb_items_zero = [pb2.ItemQty(item=name, qty=0.0)
+                                 for name, _ in original_items]
+                return pb2.BasicReply(
+                    code=pb2.BAD_REQUEST,
+                    message="No items available: requested items are out of stock or invalid",
+                    items=pb_items_zero,
+                )
 
         # Create task state for synchronization barrier
         task_id = self.state.next_task_id()
@@ -297,19 +327,29 @@ class InventoryService(inv_from_ordering_grpc.InventoryServiceServicer):
         print("[inventory_service] current inventory:", flush=True)
         self.state.dump_inventory()
 
-        # Build response with processed items
+        # Build response: for FETCH return all requested items with fulfilled qty (0 if out of stock)
+        if task_type == "FETCH":
+            fulfilled_map = dict(processed_items)
+            response_items = [(name, fulfilled_map.get(name, 0.0)) for name, _ in original_items]
+        else:
+            response_items = processed_items
         pb_items = [pb2.ItemQty(item=name, qty=qty)
-                    for name, qty in processed_items]
+                    for name, qty in response_items]
 
         # For grocery orders (FETCH), call Pricing Service to get the bill
         total_price = 0.0
         if task_type == "FETCH" and processed_items:
             total_price = call_pricing_service(processed_items)
 
+        if task_type == "FETCH":
+            msg_note = " Fulfilled up to available stock."
+        else:
+            msg_note = ""
+
         if all_responded:
             return pb2.BasicReply(
                 code=pb2.OK,
-                message=f"{task_type} completed: {len(processed_items)} items processed",
+                message=f"{task_type} completed: {len(processed_items)} items processed.{msg_note}",
                 items=pb_items,
                 total_price=total_price,
             )
@@ -318,7 +358,7 @@ class InventoryService(inv_from_ordering_grpc.InventoryServiceServicer):
                 code=pb2.OK,
                 message=(f"{task_type} partial: {task_state.response_count}/"
                          f"{NUM_ROBOTS} robots responded, "
-                         f"{len(processed_items)} items processed"),
+                         f"{len(processed_items)} items processed.{msg_note}"),
                 items=pb_items,
                 total_price=total_price,
             )
