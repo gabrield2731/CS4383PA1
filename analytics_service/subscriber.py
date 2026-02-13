@@ -4,7 +4,7 @@ import zmq
 from fbschemas.grocery.fb import AnalyticsEvent
 
 
-DEFAULT_ZMQ_SUB_ADDR = "tcp://172.16.5.77:5557"  # VM1 (Ordering Service analytics PUB)
+DEFAULT_ZMQ_SUB_ADDR = "tcp://localhost:5557"
 
 
 class AnalyticsCollector:

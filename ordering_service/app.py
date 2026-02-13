@@ -14,7 +14,7 @@ from fbschemas.grocery.fb import AnalyticsEvent as FbAnalytics
 
 app = Flask(__name__)
 
-INVENTORY_GRPC_ADDR = "172.16.5.106:50051"  # VM2 (Inventory Service)
+INVENTORY_GRPC_ADDR = "localhost:50051"
 ANALYTICS_ZMQ_BIND = "tcp://*:5557"
 
 # ----------------------------
