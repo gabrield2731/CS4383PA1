@@ -14,8 +14,10 @@ from fbschemas.grocery.fb import ItemQty, TaskType
 # ----------------------------
 # Constants
 # ----------------------------
-DEFAULT_INVENTORY_GRPC_ADDR = "localhost:50051"
-DEFAULT_ZMQ_SUB_ADDR = "tcp://localhost:5556"
+# Multi-VM: Robots (VM4) connect to Inventory (VM2)
+VM2_INVENTORY = "172.16.5.69"
+DEFAULT_INVENTORY_GRPC_ADDR = f"{VM2_INVENTORY}:50051"
+DEFAULT_ZMQ_SUB_ADDR = f"tcp://{VM2_INVENTORY}:5556"
 
 AISLE_ITEMS = {
     "bread": ["bagels", "bread", "waffles", "tortillas", "buns"],

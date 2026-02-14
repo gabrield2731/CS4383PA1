@@ -9,7 +9,9 @@ import streamlit as st
 # -----------------------------
 # Config
 # -----------------------------
-DEFAULT_ORDERING_BASE_URL = "http://localhost:5001"  # change if your Ordering service runs elsewhere
+# Multi-VM: Ordering service runs on VM1
+VM1_ORDERING = "172.16.5.77"
+DEFAULT_ORDERING_BASE_URL = f"http://{VM1_ORDERING}:5001"
 DEFAULT_ORDER_ENDPOINT = "/api/order"
 DEFAULT_RESTOCK_ENDPOINT = "/api/restock"
 DEFAULT_TIMEOUT_SECS = 25  # ordering→inventory→robots+pricing can exceed 10s

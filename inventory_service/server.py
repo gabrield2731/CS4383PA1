@@ -23,7 +23,9 @@ from fbschemas.grocery.fb import ItemQty as FbItemQty
 # ----------------------------
 NUM_ROBOTS = 5
 BARRIER_TIMEOUT_SECS = 10
-PRICING_GRPC_ADDR = "localhost:50052"
+# Multi-VM: VM2=inventory, VM3=pricing
+VM3_PRICING = "172.16.5.214"
+PRICING_GRPC_ADDR = f"{VM3_PRICING}:50052"
 
 AISLE_ITEMS = {
     "bread": ["bagels", "bread", "waffles", "tortillas", "buns"],
