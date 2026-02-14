@@ -1,7 +1,3 @@
-# PA1 – Automated Grocery Ordering & Delivery (CS4383/5383, Spring 2026)
-
-Minimal README aligned with the assignment spec: build a microservices-style grocery system using HTTP+JSON, gRPC+Protobuf, and ZeroMQ+FlatBuffers. Due Friday 02/12/2026 11:59 pm CT (per handout).
-
 ## Components & Ports
 - pricing_service: gRPC price calculator on 50052
 - inventory_service: gRPC order coordinator on 50051; publishes robot tasks via ZMQ PUB on 5556
